@@ -1178,29 +1178,46 @@
             render();
         }
         
-        function initPassengerMap() {
-            const { lat, lng } = AppState.currentPosition;
-            AppState.map = initMap('passengerMap', lat, lng);
+function initPassengerMap() {
+    // 1. أهم تعديل: حذف الخريطة القديمة إذا كانت موجودة لمنع الشاشة البيضاء
+    if (AppState.map) {
+        AppState.map.remove();
+        AppState.map = null;
+    }
+
+    const { lat, lng } = AppState.currentPosition;
+    
+    // 2. استخدام الدالة المساعدة لإنشاء الخريطة الجديدة
+    AppState.map = initMap('passengerMap', lat, lng);
+    
+    // 3. إضافة أيقونة الراكب
+    AppState.passengerMarker = addCustomMarker(AppState.map, lat, lng, '👤', '#10b981');
+    
+    // 4. منطق النقر على الخريطة لتحديد الموقع
+    AppState.map.on('click', function(e) {
+        if (AppState.mapMode === 'pickup') {
+            if (AppState.pickupMarker) AppState.map.removeLayer(AppState.pickupMarker);
+            AppState.pickupMarker = addCustomMarker(AppState.map, e.latlng.lat, e.latlng.lng, '🟢', '#10b981');
+            AppState.pickup = { lat: e.latlng.lat, lng: e.latlng.lng };
+            showNotification('تم تحديد نقطة الانطلاق ✅', 'success');
+        } else if (AppState.mapMode === 'dropoff') {
+            if (AppState.dropoffMarker) AppState.map.removeLayer(AppState.dropoffMarker);
+            AppState.dropoffMarker = addCustomMarker(AppState.map, e.latlng.lat, e.latlng.lng, '🔴', '#ef4444');
+            AppState.dropoff = { lat: e.latlng.lat, lng: e.latlng.lng };
             
-            AppState.passengerMarker = addCustomMarker(AppState.map, lat, lng, '👤', '#10b981');
-            
-            AppState.map.on('click', function(e) {
-                if (AppState.mapMode === 'pickup') {
-                    if (AppState.pickupMarker) AppState.map.removeLayer(AppState.pickupMarker);
-                    AppState.pickupMarker = addCustomMarker(AppState.map, e.latlng.lat, e.latlng.lng, '🟢', '#10b981');
-                    AppState.pickup = { lat: e.latlng.lat, lng: e.latlng.lng };
-                    showNotification('تم تحديد نقطة الانطلاق ✅', 'success');
-                } else if (AppState.mapMode === 'dropoff') {
-                    if (AppState.dropoffMarker) AppState.map.removeLayer(AppState.dropoffMarker);
-                    AppState.dropoffMarker = addCustomMarker(AppState.map, e.latlng.lat, e.latlng.lng, '🔴', '#ef4444');
-                    AppState.dropoff = { lat: e.latlng.lat, lng: e.latlng.lng };
-                    
-                    if (AppState.pickup) {
-                        drawRoute(AppState.map, [
-                            [AppState.pickup.lat, AppState.pickup.lng],
-                            [AppState.dropoff.lat, AppState.dropoff.lng]
-                        ]);
-                    }
+            if (AppState.pickup) {
+                drawRoute(AppState.map, [
+                    [AppState.pickup.lat, AppState.pickup.lng],
+                    [AppState.dropoff.lat, AppState.dropoff.lng]
+                ]);
+            }
+            showNotification('تم تحديد الوجهة ✅', 'success');
+        }
+    });
+
+    // 5. تحديث قائمة السائقين
+    updateNearbyDrivers();
+}
                     
                     showNotification('تم تحديد الوجهة ✅', 'success');
                 }
