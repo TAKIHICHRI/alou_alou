@@ -1179,25 +1179,21 @@
         }
         
 function initPassengerMap() {
-    // 1. حذف الخريطة القديمة لمنع التداخل
+    // تنظيف أي خريطة سابقة
     if (AppState.map) {
-        try {
-            AppState.map.remove();
-        } catch (e) {
-            console.error("خطأ في حذف الخريطة:", e);
-        }
+        try { AppState.map.remove(); } catch (e) { console.log(e); }
         AppState.map = null;
     }
 
     const { lat, lng } = AppState.currentPosition;
     
-    // 2. إنشاء الخريطة الجديدة
+    // إنشاء الخريطة باستخدام الدالة المساعدة
     AppState.map = initMap('passengerMap', lat, lng);
     
-    // 3. إضافة أيقونة الراكب
+    // إضافة علامة الراكب
     AppState.passengerMarker = addCustomMarker(AppState.map, lat, lng, '👤', '#10b981');
     
-    // 4. منطق النقر على الخريطة
+    // إعداد حدث النقر لتحديد الموقع
     AppState.map.on('click', function(e) {
         if (AppState.mapMode === 'pickup') {
             if (AppState.pickupMarker) AppState.map.removeLayer(AppState.pickupMarker);
@@ -1217,27 +1213,11 @@ function initPassengerMap() {
             }
             showNotification('تم تحديد الوجهة ✅', 'success');
         }
-    }); // إغلاق حدث النقر
-
-    // تحديث السائقين القريبين
-    updateNearbyDrivers();
-} // إغلاق الدالة بالكامل (هذا هو القوس الذي كان ينقصك!)
-            showNotification('تم تحديد الوجهة ✅', 'success');
-        }
     });
 
-    // 5. تحديث قائمة السائقين
+    // تحديث قائمة السائقين القريبين
     updateNearbyDrivers();
 }
-                    
-                    showNotification('تم تحديد الوجهة ✅', 'success');
-                }
-            });
-            
-            // Show nearby drivers
-            updateNearbyDrivers();
-        }
-        
         function initDriverMap() {
             const { lat, lng } = AppState.currentPosition;
             AppState.map = initMap('driverMap', lat, lng);
