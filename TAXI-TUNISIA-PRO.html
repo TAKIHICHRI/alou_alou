@@ -1,0 +1,1525 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>تاكسي تونس - منافس Bolt و Indriver</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;900&display=swap');
+        
+        * { font-family: 'Cairo', sans-serif; }
+        
+        body {
+            margin: 0;
+            padding: 0;
+            overflow-x: hidden;
+        }
+        
+        .gradient-bg {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        
+        .map-container {
+            height: 500px;
+            border-radius: 1rem;
+            overflow: hidden;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        
+        .driver-marker {
+            background: #10b981;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            border: 4px solid white;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+            50% { box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }
+        }
+        
+        .notification {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: white;
+            padding: 1rem 1.5rem;
+            border-radius: 1rem;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            z-index: 9999;
+            animation: slideInRight 0.3s ease-out;
+        }
+        
+        @keyframes slideInRight {
+            from { transform: translateX(400px); }
+            to { transform: translateX(0); }
+        }
+        
+        .file-upload-area {
+            border: 2px dashed #cbd5e0;
+            border-radius: 1rem;
+            padding: 2rem;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .file-upload-area:hover {
+            border-color: #667eea;
+            background: #f7fafc;
+        }
+        
+        .file-upload-area.dragover {
+            border-color: #667eea;
+            background: #edf2f7;
+        }
+        
+        .price-breakdown {
+            background: linear-gradient(135deg, #f0f9ff 0%, #e0e7ff 100%);
+            border-left: 4px solid #667eea;
+        }
+        
+        .nearby-request {
+            animation: slideIn 0.5s ease-out;
+        }
+        
+        @keyframes slideIn {
+            from { transform: translateY(20px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+        
+        .rating-star {
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .rating-star:hover {
+            transform: scale(1.3);
+        }
+        
+        .trip-timeline {
+            position: relative;
+            padding-right: 2rem;
+        }
+        
+        .trip-timeline::before {
+            content: '';
+            position: absolute;
+            right: 0.5rem;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: #e5e7eb;
+        }
+        
+        .trip-step {
+            position: relative;
+            padding-bottom: 2rem;
+        }
+        
+        .trip-step::before {
+            content: '';
+            position: absolute;
+            right: 0;
+            top: 0.5rem;
+            width: 1rem;
+            height: 1rem;
+            background: white;
+            border: 3px solid #667eea;
+            border-radius: 50%;
+        }
+        
+        .trip-step.completed::before {
+            background: #10b981;
+            border-color: #10b981;
+        }
+    </style>
+</head>
+<body>
+    <div id="app"></div>
+
+    <script>
+        // ===================================
+        // STATE MANAGEMENT - نظام إدارة الحالة
+        // ===================================
+        const AppState = {
+            currentView: 'welcome',
+            userType: null,
+            isAuthenticated: false,
+            currentUser: null,
+            
+            // Maps
+            map: null,
+            driverMarker: null,
+            passengerMarker: null,
+            pickupMarker: null,
+            dropoffMarker: null,
+            routeLine: null,
+            nearbyDriversMarkers: [],
+            
+            // GPS Tracking
+            watchId: null,
+            currentPosition: { lat: 36.8065, lng: 10.1815 },
+            
+            // Ride Data
+            pickup: null,
+            dropoff: null,
+            rideType: 'economy',
+            isShared: false,
+            paymentMethod: 'cash',
+            
+            // Active Ride
+            activeRide: null,
+            rideStatus: 'idle', // idle, searching, accepted, in_progress, completed
+            
+            // Driver Data
+            isOnline: false,
+            nearbyRequests: [],
+            earnings: { today: 0, week: 0, month: 0 },
+            
+            // Pricing
+            pricingRules: {
+                economy: {
+                    baseFare: 2.5,      // دينار
+                    perKm: 1.0,         // دينار/كم
+                    perMinute: 0.2,     // دينار/دقيقة
+                    minimumFare: 5.0,   // دينار
+                    surgePricing: 1.0   // معامل الزحام (1.0 = عادي، 1.5 = زحام)
+                },
+                comfort: {
+                    baseFare: 4.0,
+                    perKm: 1.5,
+                    perMinute: 0.3,
+                    minimumFare: 8.0,
+                    surgePricing: 1.0
+                },
+                premium: {
+                    baseFare: 6.0,
+                    perKm: 2.0,
+                    perMinute: 0.4,
+                    minimumFare: 12.0,
+                    surgePricing: 1.0
+                }
+            },
+            
+            // Database Simulation
+            users: [],
+            drivers: [],
+            rides: [],
+            ratings: []
+        };
+
+        // ===================================
+        // UTILITY FUNCTIONS - دوال مساعدة
+        // ===================================
+        
+        function showNotification(message, type = 'info') {
+            const notification = document.createElement('div');
+            notification.className = `notification ${
+                type === 'success' ? 'bg-green-500' : 
+                type === 'error' ? 'bg-red-500' : 
+                type === 'warning' ? 'bg-yellow-500' :
+                'bg-blue-500'
+            } text-white`;
+            notification.innerHTML = `
+                <div class="flex items-center gap-3">
+                    <span class="text-2xl">${
+                        type === 'success' ? '✅' : 
+                        type === 'error' ? '❌' : 
+                        type === 'warning' ? '⚠️' : 'ℹ️'
+                    }</span>
+                    <span class="font-semibold">${message}</span>
+                </div>
+            `;
+            document.body.appendChild(notification);
+            
+            setTimeout(() => {
+                notification.style.animation = 'slideInRight 0.3s ease-out reverse';
+                setTimeout(() => notification.remove(), 300);
+            }, 3000);
+        }
+        
+        function calculateDistance(lat1, lon1, lat2, lon2) {
+            const R = 6371; // نصف قطر الأرض بالكيلومتر
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                      Math.sin(dLon/2) * Math.sin(dLon/2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            return R * c;
+        }
+        
+        // نظام التسعير الديناميكي - مثل Bolt و Indriver
+        function calculateFare(distance, estimatedTime, rideType, isShared = false) {
+            const rules = AppState.pricingRules[rideType];
+            
+            // الحساب الأساسي
+            let fare = rules.baseFare + 
+                      (distance * rules.perKm) + 
+                      (estimatedTime * rules.perMinute);
+            
+            // تطبيق معامل الزحام (Surge Pricing)
+            fare = fare * rules.surgePricing;
+            
+            // الحد الأدنى
+            fare = Math.max(fare, rules.minimumFare);
+            
+            // خصم الرحلة المشتركة
+            if (isShared) {
+                fare = fare * 0.6; // 40% خصم
+            }
+            
+            // تفصيل السعر
+            return {
+                total: parseFloat(fare.toFixed(2)),
+                baseFare: rules.baseFare,
+                distanceFare: parseFloat((distance * rules.perKm).toFixed(2)),
+                timeFare: parseFloat((estimatedTime * rules.perMinute).toFixed(2)),
+                surgeFactor: rules.surgePricing,
+                discount: isShared ? parseFloat((fare * 0.4).toFixed(2)) : 0
+            };
+        }
+        
+        function initMap(containerId, lat, lng, zoom = 13) {
+            const map = L.map(containerId).setView([lat, lng], zoom);
+            
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap'
+            }).addTo(map);
+            
+            return map;
+        }
+        
+        function addCustomMarker(map, lat, lng, icon, color = '#667eea') {
+            const markerHtml = `
+                <div class="driver-marker" style="background: ${color};">
+                    ${icon}
+                </div>
+            `;
+            
+            const customIcon = L.divIcon({
+                className: 'custom-div-icon',
+                html: markerHtml,
+                iconSize: [40, 40]
+            });
+            
+            return L.marker([lat, lng], { icon: customIcon }).addTo(map);
+        }
+        
+        function drawRoute(map, points, color = '#667eea') {
+            if (AppState.routeLine) {
+                map.removeLayer(AppState.routeLine);
+            }
+            
+            AppState.routeLine = L.polyline(points, {
+                color: color,
+                weight: 5,
+                opacity: 0.7,
+                smoothFactor: 1
+            }).addTo(map);
+            
+            map.fitBounds(AppState.routeLine.getBounds(), { padding: [50, 50] });
+        }
+        
+        // بدء تتبع موقع السائق الحقيقي
+        function startGPSTracking() {
+            if (!navigator.geolocation) {
+                showNotification('المتصفح لا يدعم GPS', 'error');
+                return;
+            }
+            
+            AppState.watchId = navigator.geolocation.watchPosition(
+                (position) => {
+                    const { latitude, longitude } = position.coords;
+                    AppState.currentPosition = { lat: latitude, lng: longitude };
+                    
+                    // تحديث موقع السائق على الخريطة
+                    if (AppState.driverMarker && AppState.map) {
+                        AppState.driverMarker.setLatLng([latitude, longitude]);
+                        AppState.map.panTo([latitude, longitude]);
+                    }
+                    
+                    // إرسال الموقع للخادم (محاكاة)
+                    updateDriverLocation(latitude, longitude);
+                },
+                (error) => {
+                    console.error('GPS Error:', error);
+                    showNotification('خطأ في تحديد الموقع', 'error');
+                },
+                {
+                    enableHighAccuracy: true,
+                    timeout: 5000,
+                    maximumAge: 0
+                }
+            );
+        }
+        
+        function stopGPSTracking() {
+            if (AppState.watchId) {
+                navigator.geolocation.clearWatch(AppState.watchId);
+                AppState.watchId = null;
+            }
+        }
+        
+        function updateDriverLocation(lat, lng) {
+            // هنا نرسل الموقع للخادم
+            // في النسخة الحقيقية: API call to update database
+            console.log(`Driver location updated: ${lat}, ${lng}`);
+        }
+        
+        // البحث عن السائقين القريبين
+        function findNearbyDrivers(passengerLat, passengerLng, radius = 5) {
+            return AppState.drivers.filter(driver => {
+                if (!driver.isOnline || !driver.location) return false;
+                
+                const distance = calculateDistance(
+                    passengerLat, passengerLng,
+                    driver.location.lat, driver.location.lng
+                );
+                
+                return distance <= radius;
+            }).map(driver => ({
+                ...driver,
+                distanceToPassenger: calculateDistance(
+                    passengerLat, passengerLng,
+                    driver.location.lat, driver.location.lng
+                )
+            })).sort((a, b) => a.distanceToPassenger - b.distanceToPassenger);
+        }
+
+        // ===================================
+        // AUTHENTICATION VIEWS - واجهات تسجيل الدخول
+        // ===================================
+        
+        function WelcomeView() {
+            return `
+                <div class="min-h-screen gradient-bg flex items-center justify-center p-4">
+                    <div class="max-w-4xl w-full">
+                        <div class="text-center mb-12">
+                            <div class="text-9xl mb-6">🚖</div>
+                            <h1 class="text-6xl font-black text-white mb-4">تاكسي تونس</h1>
+                            <p class="text-2xl text-white opacity-90 mb-2">منافس Bolt و Indriver</p>
+                            <p class="text-lg text-white opacity-75">نظام حجز تاكسي متطور بالكامل</p>
+                        </div>
+                        
+                        <div class="grid md:grid-cols-2 gap-6">
+                            <button onclick="AppState.currentView = 'login-passenger'; render();" 
+                                class="bg-white rounded-3xl shadow-2xl p-8 hover:scale-105 transition transform">
+                                <div class="text-6xl mb-4">👥</div>
+                                <h2 class="text-2xl font-bold text-purple-600 mb-2">راكب</h2>
+                                <p class="text-gray-600">احجز رحلتك الآن</p>
+                                <div class="mt-4 text-sm text-gray-500">
+                                    • GPS دقيق<br>
+                                    • تسعير شفاف<br>
+                                    • سائقون محترفون
+                                </div>
+                            </button>
+                            
+                            <button onclick="AppState.currentView = 'login-driver'; render();" 
+                                class="bg-white rounded-3xl shadow-2xl p-8 hover:scale-105 transition transform">
+                                <div class="text-6xl mb-4">🚕</div>
+                                <h2 class="text-2xl font-bold text-blue-600 mb-2">سائق</h2>
+                                <p class="text-gray-600">ابدأ العمل معنا</p>
+                                <div class="mt-4 text-sm text-gray-500">
+                                    • طلبات مباشرة<br>
+                                    • أرباح عالية<br>
+                                    • نظام عادل
+                                </div>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+        
+        function LoginPassengerView() {
+            return `
+                <div class="min-h-screen gradient-bg flex items-center justify-center p-4">
+                    <div class="bg-white rounded-3xl shadow-2xl p-8 w-full max-w-md">
+                        <button onclick="AppState.currentView = 'welcome'; render();" 
+                            class="text-gray-600 hover:text-gray-800 mb-4">← رجوع</button>
+                        
+                        <div class="text-center mb-8">
+                            <div class="text-6xl mb-4">👤</div>
+                            <h2 class="text-3xl font-bold mb-2">تسجيل دخول الراكب</h2>
+                            <p class="text-gray-600">أدخل رقم هاتفك للمتابعة</p>
+                        </div>
+                        
+                        <form onsubmit="loginPassenger(event)" class="space-y-4">
+                            <div>
+                                <label class="block text-sm font-semibold mb-2">رقم الهاتف</label>
+                                <input type="tel" id="passengerPhone" required
+                                    placeholder="21612345678"
+                                    class="w-full p-4 border-2 border-gray-300 rounded-xl focus:border-purple-500 focus:outline-none">
+                            </div>
+                            
+                            <div>
+                                <label class="block text-sm font-semibold mb-2">الاسم الكامل</label>
+                                <input type="text" id="passengerName" required
+                                    placeholder="محمد بن علي"
+                                    class="w-full p-4 border-2 border-gray-300 rounded-xl focus:border-purple-500 focus:outline-none">
+                            </div>
+                            
+                            <button type="submit" 
+                                class="w-full gradient-bg text-white p-4 rounded-xl font-bold text-lg hover:shadow-xl transition">
+                                دخول 🚀
+                            </button>
+                        </form>
+                        
+                        <p class="text-center text-sm text-gray-500 mt-6">
+                            باستمرارك، أنت توافق على شروط الاستخدام
+                        </p>
+                    </div>
+                </div>
+            `;
+        }
+        
+        function LoginDriverView() {
+            return `
+                <div class="min-h-screen gradient-bg flex items-center justify-center p-4">
+                    <div class="bg-white rounded-3xl shadow-2xl p-8 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+                        <button onclick="AppState.currentView = 'welcome'; render();" 
+                            class="text-gray-600 hover:text-gray-800 mb-4">← رجوع</button>
+                        
+                        <div class="text-center mb-8">
+                            <div class="text-6xl mb-4">🚕</div>
+                            <h2 class="text-3xl font-bold mb-2">تسجيل سائق جديد</h2>
+                            <p class="text-gray-600">أكمل البيانات التالية للانضمام</p>
+                        </div>
+                        
+                        <form onsubmit="registerDriver(event)" class="space-y-6">
+                            <!-- البيانات الشخصية -->
+                            <div class="border-b pb-6">
+                                <h3 class="text-xl font-bold mb-4">📋 البيانات الشخصية</h3>
+                                
+                                <div class="space-y-4">
+                                    <div>
+                                        <label class="block text-sm font-semibold mb-2">الاسم الكامل *</label>
+                                        <input type="text" id="driverName" required
+                                            placeholder="محمد بن علي"
+                                            class="w-full p-3 border-2 border-gray-300 rounded-xl focus:border-blue-500 focus:outline-none">
+                                    </div>
+                                    
+                                    <div>
+                                        <label class="block text-sm font-semibold mb-2">رقم الهاتف *</label>
+                                        <input type="tel" id="driverPhone" required
+                                            placeholder="21612345678"
+                                            class="w-full p-3 border-2 border-gray-300 rounded-xl focus:border-blue-500 focus:outline-none">
+                                    </div>
+                                    
+                                    <div>
+                                        <label class="block text-sm font-semibold mb-2">البريد الإلكتروني</label>
+                                        <input type="email" id="driverEmail"
+                                            placeholder="driver@email.com"
+                                            class="w-full p-3 border-2 border-gray-300 rounded-xl focus:border-blue-500 focus:outline-none">
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- معلومات السيارة -->
+                            <div class="border-b pb-6">
+                                <h3 class="text-xl font-bold mb-4">🚗 معلومات السيارة</h3>
+                                
+                                <div class="space-y-4">
+                                    <div class="grid grid-cols-2 gap-4">
+                                        <div>
+                                            <label class="block text-sm font-semibold mb-2">نوع السيارة *</label>
+                                            <select id="vehicleType" required
+                                                class="w-full p-3 border-2 border-gray-300 rounded-xl focus:border-blue-500 focus:outline-none">
+                                                <option value="economy">اقتصادي</option>
+                                                <option value="comfort">مريح</option>
+                                                <option value="premium">بريميوم</option>
+                                            </select>
+                                        </div>
+                                        
+                                        <div>
+                                            <label class="block text-sm font-semibold mb-2">سنة الصنع *</label>
+                                            <input type="number" id="vehicleYear" required min="2010" max="2026"
+                                                placeholder="2020"
+                                                class="w-full p-3 border-2 border-gray-300 rounded-xl focus:border-blue-500 focus:outline-none">
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="grid grid-cols-2 gap-4">
+                                        <div>
+                                            <label class="block text-sm font-semibold mb-2">العلامة التجارية *</label>
+                                            <input type="text" id="vehicleMake" required
+                                                placeholder="بيجو"
+                                                class="w-full p-3 border-2 border-gray-300 rounded-xl focus:border-blue-500 focus:outline-none">
+                                        </div>
+                                        
+                                        <div>
+                                            <label class="block text-sm font-semibold mb-2">الموديل *</label>
+                                            <input type="text" id="vehicleModel" required
+                                                placeholder="301"
+                                                class="w-full p-3 border-2 border-gray-300 rounded-xl focus:outline-none">
+                                        </div>
+                                    </div>
+                                    
+                                    <div>
+                                        <label class="block text-sm font-semibold mb-2">رقم اللوحة *</label>
+                                        <input type="text" id="plateNumber" required
+                                            placeholder="123 تونس 4567"
+                                            class="w-full p-3 border-2 border-gray-300 rounded-xl focus:border-blue-500 focus:outline-none">
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- الوثائق -->
+                            <div class="border-b pb-6">
+                                <h3 class="text-xl font-bold mb-4">📄 الوثائق المطلوبة</h3>
+                                
+                                <div class="space-y-4">
+                                    <!-- صورة السائق -->
+                                    <div>
+                                        <label class="block text-sm font-semibold mb-2">صورة شخصية *</label>
+                                        <div class="file-upload-area" onclick="document.getElementById('driverPhoto').click()">
+                                            <div class="text-4xl mb-2">📸</div>
+                                            <p class="font-semibold">اضغط لرفع صورتك الشخصية</p>
+                                            <p class="text-sm text-gray-500 mt-1">PNG, JPG (Max: 5MB)</p>
+                                            <input type="file" id="driverPhoto" accept="image/*" class="hidden" 
+                                                onchange="handleFileUpload(this, 'driverPhotoPreview')">
+                                        </div>
+                                        <div id="driverPhotoPreview" class="mt-2"></div>
+                                    </div>
+                                    
+                                    <!-- رخصة السياقة -->
+                                    <div>
+                                        <label class="block text-sm font-semibold mb-2">رخصة السياقة *</label>
+                                        <input type="text" id="licenseNumber" required
+                                            placeholder="رقم رخصة السياقة"
+                                            class="w-full p-3 border-2 border-gray-300 rounded-xl focus:border-blue-500 focus:outline-none mb-2">
+                                        <div class="file-upload-area" onclick="document.getElementById('licensePhoto').click()">
+                                            <div class="text-4xl mb-2">🪪</div>
+                                            <p class="font-semibold">صورة رخصة السياقة</p>
+                                            <input type="file" id="licensePhoto" accept="image/*" class="hidden"
+                                                onchange="handleFileUpload(this, 'licensePhotoPreview')">
+                                        </div>
+                                        <div id="licensePhotoPreview" class="mt-2"></div>
+                                    </div>
+                                    
+                                    <!-- رخصة التاكسي -->
+                                    <div>
+                                        <label class="block text-sm font-semibold mb-2">رخصة التاكسي *</label>
+                                        <input type="text" id="taxiLicenseNumber" required
+                                            placeholder="رقم رخصة التاكسي"
+                                            class="w-full p-3 border-2 border-gray-300 rounded-xl focus:border-blue-500 focus:outline-none mb-2">
+                                        <div class="file-upload-area" onclick="document.getElementById('taxiLicensePhoto').click()">
+                                            <div class="text-4xl mb-2">🚖</div>
+                                            <p class="font-semibold">صورة رخصة التاكسي</p>
+                                            <input type="file" id="taxiLicensePhoto" accept="image/*" class="hidden"
+                                                onchange="handleFileUpload(this, 'taxiLicensePhotoPreview')">
+                                        </div>
+                                        <div id="taxiLicensePhotoPreview" class="mt-2"></div>
+                                    </div>
+                                    
+                                    <!-- صورة السيارة -->
+                                    <div>
+                                        <label class="block text-sm font-semibold mb-2">صورة السيارة *</label>
+                                        <div class="file-upload-area" onclick="document.getElementById('vehiclePhoto').click()">
+                                            <div class="text-4xl mb-2">🚗</div>
+                                            <p class="font-semibold">صورة واضحة للسيارة</p>
+                                            <input type="file" id="vehiclePhoto" accept="image/*" class="hidden"
+                                                onchange="handleFileUpload(this, 'vehiclePhotoPreview')">
+                                        </div>
+                                        <div id="vehiclePhotoPreview" class="mt-2"></div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <button type="submit" 
+                                class="w-full bg-gradient-to-r from-blue-500 to-blue-700 text-white p-4 rounded-xl font-bold text-lg hover:shadow-xl transition">
+                                تسجيل وبدء العمل 🚀
+                            </button>
+                            
+                            <p class="text-center text-sm text-gray-500">
+                                سيتم مراجعة طلبك خلال 24 ساعة
+                            </p>
+                        </form>
+                    </div>
+                </div>
+            `;
+        }
+
+        // ===================================
+        // PASSENGER VIEW - واجهة الراكب
+        // ===================================
+        
+        function PassengerView() {
+            const fareDetails = AppState.fareEstimate;
+            
+            return `
+                <div class="min-h-screen bg-gray-100">
+                    <!-- Header -->
+                    <header class="gradient-bg text-white shadow-lg">
+                        <div class="container mx-auto px-4 py-4">
+                            <div class="flex justify-between items-center">
+                                <div class="flex items-center gap-3">
+                                    <button onclick="logout()" class="hover:bg-white/20 p-2 rounded-lg transition">
+                                        🚪 خروج
+                                    </button>
+                                    <div>
+                                        <h1 class="text-xl font-bold">مرحباً ${AppState.currentUser?.name || 'راكب'}</h1>
+                                        <p class="text-sm opacity-90">📍 ${AppState.currentPosition.lat.toFixed(4)}, ${AppState.currentPosition.lng.toFixed(4)}</p>
+                                    </div>
+                                </div>
+                                
+                                <div class="flex items-center gap-4">
+                                    <div class="bg-white/20 px-4 py-2 rounded-full">
+                                        ⭐ ${AppState.currentUser?.rating || '5.0'}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </header>
+
+                    <div class="container mx-auto px-4 py-6">
+                        <div class="grid lg:grid-cols-3 gap-6">
+                            <!-- Main Panel -->
+                            <div class="lg:col-span-2 space-y-6">
+                                <!-- Map -->
+                                <div class="bg-white rounded-2xl shadow-xl p-6">
+                                    <div class="flex justify-between items-center mb-4">
+                                        <h2 class="text-2xl font-bold">🗺️ الخريطة التفاعلية</h2>
+                                        <button onclick="getCurrentLocation()" 
+                                            class="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg transition">
+                                            📍 موقعي
+                                        </button>
+                                    </div>
+                                    
+                                    <div id="passengerMap" class="map-container"></div>
+                                    
+                                    <div class="grid grid-cols-2 gap-3 mt-4">
+                                        <button onclick="setPickupMode()" 
+                                            class="bg-green-500 hover:bg-green-600 text-white p-3 rounded-xl font-bold transition">
+                                            🟢 نقطة الانطلاق
+                                        </button>
+                                        <button onclick="setDropoffMode()" 
+                                            class="bg-red-500 hover:bg-red-600 text-white p-3 rounded-xl font-bold transition">
+                                            🔴 الوجهة
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <!-- Booking Form -->
+                                ${AppState.rideStatus === 'idle' ? `
+                                    <div class="bg-white rounded-2xl shadow-xl p-6">
+                                        <h2 class="text-2xl font-bold mb-6">🎯 تفاصيل الرحلة</h2>
+                                        
+                                        <!-- Ride Type -->
+                                        <div class="mb-6">
+                                            <h3 class="font-bold mb-3">نوع السيارة</h3>
+                                            <div class="grid grid-cols-3 gap-3">
+                                                ${['economy', 'comfort', 'premium'].map(type => `
+                                                    <button onclick="AppState.rideType = '${type}'; calculateFareEstimate(); render();"
+                                                        class="p-4 rounded-xl border-2 transition ${AppState.rideType === type ? 'border-purple-600 bg-purple-100' : 'border-gray-300'}">
+                                                        <div class="text-2xl mb-2">${type === 'economy' ? '🚕' : type === 'comfort' ? '🚙' : '🚗'}</div>
+                                                        <div class="font-bold text-sm">${type === 'economy' ? 'اقتصادي' : type === 'comfort' ? 'مريح' : 'بريميوم'}</div>
+                                                        <div class="text-xs text-gray-600 mt-1">
+                                                            ${AppState.pricingRules[type].perKm} دت/كم
+                                                        </div>
+                                                    </button>
+                                                `).join('')}
+                                            </div>
+                                        </div>
+
+                                        <!-- Shared Ride -->
+                                        <label class="flex items-center gap-3 p-4 bg-green-50 rounded-xl cursor-pointer mb-6">
+                                            <input type="checkbox" ${AppState.isShared ? 'checked' : ''}
+                                                onchange="AppState.isShared = this.checked; calculateFareEstimate(); render();"
+                                                class="w-6 h-6">
+                                            <div class="flex-1">
+                                                <div class="font-semibold">👥 رحلة مشتركة</div>
+                                                <div class="text-sm text-gray-600">وفّر 40%</div>
+                                            </div>
+                                            <div class="text-xl font-bold text-green-600">-40%</div>
+                                        </label>
+
+                                        <!-- Payment -->
+                                        <div class="mb-6">
+                                            <h3 class="font-bold mb-3">طريقة الدفع</h3>
+                                            <div class="grid grid-cols-2 gap-3">
+                                                ${['cash', 'card'].map(method => `
+                                                    <button onclick="AppState.paymentMethod = '${method}'; render();"
+                                                        class="p-4 rounded-xl border-2 transition ${AppState.paymentMethod === method ? 'bg-green-100 border-green-500' : 'border-gray-300'}">
+                                                        <div class="text-2xl mb-2">${method === 'cash' ? '💵' : '💳'}</div>
+                                                        <div class="font-semibold">${method === 'cash' ? 'نقدي' : 'بطاقة'}</div>
+                                                    </button>
+                                                `).join('')}
+                                            </div>
+                                        </div>
+
+                                        <!-- Fare Estimate -->
+                                        ${fareDetails ? `
+                                            <div class="price-breakdown p-6 rounded-xl mb-6">
+                                                <h3 class="font-bold text-lg mb-4">💰 تفاصيل السعر</h3>
+                                                
+                                                <div class="space-y-3">
+                                                    <div class="flex justify-between">
+                                                        <span class="text-gray-600">التعريفة الأساسية</span>
+                                                        <span class="font-semibold">${fareDetails.baseFare} دت</span>
+                                                    </div>
+                                                    <div class="flex justify-between">
+                                                        <span class="text-gray-600">المسافة (${AppState.fareEstimate.distance} كم)</span>
+                                                        <span class="font-semibold">${fareDetails.distanceFare} دت</span>
+                                                    </div>
+                                                    <div class="flex justify-between">
+                                                        <span class="text-gray-600">الوقت المتوقع (${AppState.fareEstimate.estimatedTime} دقيقة)</span>
+                                                        <span class="font-semibold">${fareDetails.timeFare} دت</span>
+                                                    </div>
+                                                    ${fareDetails.surgeFactor > 1 ? `
+                                                        <div class="flex justify-between text-orange-600">
+                                                            <span>⚡ زحام مروري</span>
+                                                            <span class="font-semibold">×${fareDetails.surgeFactor}</span>
+                                                        </div>
+                                                    ` : ''}
+                                                    ${fareDetails.discount > 0 ? `
+                                                        <div class="flex justify-between text-green-600">
+                                                            <span>خصم الرحلة المشتركة</span>
+                                                            <span class="font-semibold">-${fareDetails.discount} دت</span>
+                                                        </div>
+                                                    ` : ''}
+                                                    
+                                                    <div class="border-t-2 border-gray-300 pt-3 mt-3">
+                                                        <div class="flex justify-between items-center">
+                                                            <span class="text-xl font-bold">الإجمالي</span>
+                                                            <span class="text-3xl font-bold text-purple-600">${fareDetails.total} دت</span>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ` : ''}
+
+                                        <!-- Actions -->
+                                        <div class="grid grid-cols-2 gap-3">
+                                            <button onclick="calculateFareEstimate()" 
+                                                class="bg-gray-500 hover:bg-gray-600 text-white p-4 rounded-xl font-bold transition">
+                                                💰 احسب السعر
+                                            </button>
+                                            <button onclick="requestRide()" 
+                                                class="gradient-bg text-white p-4 rounded-xl font-bold shadow-lg hover:shadow-xl transition">
+                                                🚀 احجز الآن
+                                            </button>
+                                        </div>
+                                    </div>
+                                ` : ''}
+
+                                <!-- Active Ride -->
+                                ${AppState.rideStatus !== 'idle' ? `
+                                    <div class="bg-white rounded-2xl shadow-xl p-6">
+                                        <h2 class="text-2xl font-bold mb-6">🚗 رحلتك النشطة</h2>
+                                        
+                                        <div class="space-y-6">
+                                            <!-- Status -->
+                                            <div class="bg-blue-100 p-4 rounded-xl text-center">
+                                                <div class="text-4xl mb-2">
+                                                    ${AppState.rideStatus === 'searching' ? '🔍' : 
+                                                      AppState.rideStatus === 'accepted' ? '🚗' : 
+                                                      AppState.rideStatus === 'in_progress' ? '✅' : '🎉'}
+                                                </div>
+                                                <div class="font-bold text-xl">
+                                                    ${AppState.rideStatus === 'searching' ? 'جاري البحث عن سائق...' : 
+                                                      AppState.rideStatus === 'accepted' ? 'السائق في الطريق إليك!' : 
+                                                      AppState.rideStatus === 'in_progress' ? 'الرحلة جارية' : 'انتهت الرحلة!'}
+                                                </div>
+                                            </div>
+
+                                            ${AppState.activeRide?.driver ? `
+                                                <!-- Driver Info -->
+                                                <div class="border-2 border-gray-200 rounded-xl p-4">
+                                                    <h3 class="font-bold mb-3">معلومات السائق</h3>
+                                                    <div class="flex items-center gap-4">
+                                                        <div class="w-16 h-16 bg-gradient-to-br from-purple-500 to-blue-500 rounded-full flex items-center justify-center text-white text-2xl font-bold">
+                                                            ${AppState.activeRide.driver.name.charAt(0)}
+                                                        </div>
+                                                        <div class="flex-1">
+                                                            <div class="font-bold text-lg">${AppState.activeRide.driver.name}</div>
+                                                            <div class="text-yellow-600">⭐ ${AppState.activeRide.driver.rating}</div>
+                                                            <div class="text-sm text-gray-600">${AppState.activeRide.driver.vehicle}</div>
+                                                        </div>
+                                                        <a href="tel:${AppState.activeRide.driver.phone}" 
+                                                            class="bg-green-500 hover:bg-green-600 text-white p-4 rounded-full transition">
+                                                            📞
+                                                        </a>
+                                                    </div>
+                                                </div>
+                                            ` : ''}
+
+                                            <button onclick="cancelRide()" 
+                                                class="w-full bg-red-500 hover:bg-red-600 text-white p-4 rounded-xl font-bold transition">
+                                                ❌ إلغاء الرحلة
+                                            </button>
+                                        </div>
+                                    </div>
+                                ` : ''}
+                            </div>
+
+                            <!-- Sidebar -->
+                            <div class="space-y-6">
+                                <!-- Nearby Drivers -->
+                                <div class="bg-white rounded-2xl shadow-xl p-6">
+                                    <h3 class="text-xl font-bold mb-4">🚕 سائقون قريبون</h3>
+                                    <div id="nearbyDriversList" class="space-y-3">
+                                        <p class="text-center text-gray-500 text-sm">جاري البحث...</p>
+                                    </div>
+                                </div>
+
+                                <!-- Promo -->
+                                <div class="bg-gradient-to-br from-yellow-400 to-orange-500 rounded-2xl shadow-xl p-6 text-white">
+                                    <div class="text-4xl mb-3">🎁</div>
+                                    <h3 class="text-xl font-bold mb-2">عرض خاص!</h3>
+                                    <p class="mb-4">خصم 20% على أول 3 رحلات</p>
+                                    <div class="bg-white/30 backdrop-blur p-3 rounded-xl text-center">
+                                        <div class="text-sm font-semibold">الكود</div>
+                                        <div class="text-2xl font-bold">TAXI20</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // ===================================
+        // DRIVER VIEW - واجهة السائق
+        // ===================================
+        
+        function DriverView() {
+            return `
+                <div class="min-h-screen bg-gray-100">
+                    <header class="gradient-bg text-white shadow-lg">
+                        <div class="container mx-auto px-4 py-4">
+                            <div class="flex justify-between items-center">
+                                <div class="flex items-center gap-3">
+                                    <button onclick="logout()" class="hover:bg-white/20 p-2 rounded-lg transition">
+                                        🚪 خروج
+                                    </button>
+                                    <div>
+                                        <h1 class="text-xl font-bold">${AppState.currentUser?.name || 'سائق'}</h1>
+                                        <div class="flex items-center gap-2">
+                                            <div class="w-3 h-3 rounded-full ${AppState.isOnline ? 'bg-green-500' : 'bg-red-500'}"></div>
+                                            <span class="text-sm">${AppState.isOnline ? 'متصل' : 'غير متصل'}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div class="flex items-center gap-4">
+                                    <div class="text-right">
+                                        <div class="text-2xl font-bold">${AppState.earnings.today.toFixed(1)} دت</div>
+                                        <div class="text-sm opacity-90">أرباح اليوم</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </header>
+
+                    <div class="container mx-auto px-4 py-6">
+                        <!-- Stats -->
+                        <div class="grid grid-cols-4 gap-4 mb-6">
+                            ${[
+                                { label: 'رحلات اليوم', value: AppState.currentUser?.stats?.todayRides || 0, icon: '📊' },
+                                { label: 'هذا الأسبوع', value: (AppState.earnings.week).toFixed(0) + ' دت', icon: '💰' },
+                                { label: 'التقييم', value: AppState.currentUser?.rating || 5.0, icon: '⭐' },
+                                { label: 'إجمالي الرحلات', value: AppState.currentUser?.stats?.totalRides || 0, icon: '🎯' }
+                            ].map(stat => `
+                                <div class="bg-white rounded-xl p-4 shadow-lg text-center">
+                                    <div class="text-3xl mb-2">${stat.icon}</div>
+                                    <div class="text-2xl font-bold text-purple-600">${stat.value}</div>
+                                    <div class="text-sm text-gray-600">${stat.label}</div>
+                                </div>
+                            `).join('')}
+                        </div>
+
+                        <div class="grid lg:grid-cols-3 gap-6">
+                            <div class="lg:col-span-2 space-y-6">
+                                <!-- Online Toggle -->
+                                <div class="bg-white rounded-2xl shadow-xl p-6">
+                                    <div class="flex justify-between items-center">
+                                        <div>
+                                            <h3 class="text-2xl font-bold mb-2">حالة الاتصال</h3>
+                                            <p class="text-gray-600">${AppState.isOnline ? 'تستقبل طلبات الآن' : 'غير متصل'}</p>
+                                        </div>
+                                        <label class="relative inline-flex items-center cursor-pointer">
+                                            <input type="checkbox" ${AppState.isOnline ? 'checked' : ''}
+                                                onchange="toggleDriverOnline()" class="sr-only peer">
+                                            <div class="w-20 h-10 bg-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:right-[2px] after:bg-white after:rounded-full after:h-9 after:w-9 after:transition-all peer-checked:bg-green-500"></div>
+                                        </label>
+                                    </div>
+                                </div>
+
+                                <!-- Nearby Requests -->
+                                ${AppState.isOnline ? `
+                                    <div class="bg-white rounded-2xl shadow-xl p-6">
+                                        <h3 class="text-2xl font-bold mb-4">📍 طلبات قريبة منك</h3>
+                                        
+                                        <div class="space-y-4" id="nearbyRequestsList">
+                                            ${AppState.nearbyRequests.length > 0 ? 
+                                                AppState.nearbyRequests.map(req => `
+                                                    <div class="nearby-request border-2 border-purple-300 rounded-xl p-4 bg-purple-50">
+                                                        <div class="flex justify-between items-start mb-3">
+                                                            <div>
+                                                                <div class="text-xl font-bold">طلب جديد 🎯</div>
+                                                                <div class="text-gray-600">💰 ${req.fare} دت • 📏 ${req.distance} كم</div>
+                                                            </div>
+                                                            <div class="bg-purple-600 text-white px-3 py-1 rounded-full font-bold text-sm">
+                                                                ${req.distanceToDriver.toFixed(1)} كم منك
+                                                            </div>
+                                                        </div>
+                                                        
+                                                        <div class="space-y-2 mb-4">
+                                                            <div class="flex items-start gap-2 p-2 bg-green-100 rounded-lg">
+                                                                <span>🟢</span>
+                                                                <span class="text-sm">${req.pickup}</span>
+                                                            </div>
+                                                            <div class="flex items-start gap-2 p-2 bg-red-100 rounded-lg">
+                                                                <span>🔴</span>
+                                                                <span class="text-sm">${req.dropoff}</span>
+                                                            </div>
+                                                        </div>
+                                                        
+                                                        <div class="grid grid-cols-2 gap-3">
+                                                            <button onclick="acceptRide(${req.id})" 
+                                                                class="bg-green-500 hover:bg-green-600 text-white p-3 rounded-xl font-bold transition">
+                                                                ✅ قبول
+                                                            </button>
+                                                            <button onclick="rejectRide(${req.id})" 
+                                                                class="bg-gray-300 hover:bg-gray-400 text-gray-700 p-3 rounded-xl font-bold transition">
+                                                                ❌ تجاهل
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                `).join('') 
+                                                : '<p class="text-center text-gray-500 py-8">جاري البحث عن طلبات قريبة...</p>'
+                                            }
+                                        </div>
+                                    </div>
+                                ` : `
+                                    <div class="bg-white rounded-2xl shadow-xl p-12 text-center">
+                                        <div class="text-6xl mb-4">😴</div>
+                                        <h3 class="text-2xl font-bold mb-2">غير متصل</h3>
+                                        <p class="text-gray-600 mb-6">فعّل الاتصال لبدء استقبال الطلبات</p>
+                                        <button onclick="toggleDriverOnline()" 
+                                            class="gradient-bg text-white px-8 py-4 rounded-xl font-bold text-lg transition">
+                                            🚀 ابدأ العمل
+                                        </button>
+                                    </div>
+                                `}
+
+                                <!-- GPS Map -->
+                                <div class="bg-white rounded-2xl shadow-xl p-6">
+                                    <h3 class="text-xl font-bold mb-4">🗺️ موقعك الحالي (GPS)</h3>
+                                    <div id="driverMap" class="map-container"></div>
+                                    <div class="mt-4 flex justify-between items-center text-sm">
+                                        <span class="text-gray-600">آخر تحديث: الآن</span>
+                                        <span class="text-green-600 font-semibold">● GPS نشط</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Sidebar -->
+                            <div class="space-y-6">
+                                <!-- Earnings Breakdown -->
+                                <div class="bg-white rounded-2xl shadow-xl p-6">
+                                    <h3 class="text-xl font-bold mb-4">💵 الأرباح</h3>
+                                    <div class="space-y-3">
+                                        <div class="flex justify-between p-3 bg-green-50 rounded-lg">
+                                            <span>اليوم</span>
+                                            <span class="font-bold">${AppState.earnings.today.toFixed(1)} دت</span>
+                                        </div>
+                                        <div class="flex justify-between p-3 bg-blue-50 rounded-lg">
+                                            <span>هذا الأسبوع</span>
+                                            <span class="font-bold">${AppState.earnings.week.toFixed(0)} دت</span>
+                                        </div>
+                                        <div class="flex justify-between p-3 bg-purple-50 rounded-lg">
+                                            <span>هذا الشهر</span>
+                                            <span class="font-bold">${AppState.earnings.month.toFixed(0)} دت</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Tips -->
+                                <div class="bg-gradient-to-br from-yellow-400 to-orange-500 rounded-2xl shadow-xl p-6 text-white">
+                                    <div class="text-4xl mb-3">💡</div>
+                                    <h3 class="text-xl font-bold mb-3">نصائح</h3>
+                                    <ul class="space-y-2 text-sm">
+                                        <li>✅ ابق قريباً من المناطق المزدحمة</li>
+                                        <li>✅ حافظ على تقييمك فوق 4.5</li>
+                                        <li>✅ تجنب إلغاء الطلبات</li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // ===================================
+        // EVENT HANDLERS - معالجات الأحداث
+        // ===================================
+        
+        function handleFileUpload(input, previewId) {
+            const file = input.files[0];
+            if (!file) return;
+            
+            if (file.size > 5 * 1024 * 1024) {
+                showNotification('حجم الملف كبير جداً (الحد الأقصى 5MB)', 'error');
+                return;
+            }
+            
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const preview = document.getElementById(previewId);
+                preview.innerHTML = `
+                    <div class="relative inline-block">
+                        <img src="${e.target.result}" class="w-32 h-32 object-cover rounded-lg border-2 border-green-500">
+                        <div class="absolute top-0 right-0 bg-green-500 text-white rounded-full p-1">
+                            ✓
+                        </div>
+                    </div>
+                `;
+            };
+            reader.readAsDataURL(file);
+            
+            showNotification('تم رفع الصورة بنجاح ✅', 'success');
+        }
+        
+        function loginPassenger(event) {
+            event.preventDefault();
+            
+            const phone = document.getElementById('passengerPhone').value;
+            const name = document.getElementById('passengerName').value;
+            
+            AppState.currentUser = {
+                id: Date.now(),
+                phone,
+                name,
+                type: 'passenger',
+                rating: 5.0,
+                ridesCount: 0
+            };
+            
+            AppState.isAuthenticated = true;
+            AppState.currentView = 'passenger';
+            
+            showNotification(`مرحباً ${name}! 👋`, 'success');
+            render();
+            
+            setTimeout(() => {
+                if (!AppState.map) {
+                    getCurrentLocation();
+                    initPassengerMap();
+                }
+            }, 100);
+        }
+        
+        function registerDriver(event) {
+            event.preventDefault();
+            
+            const driver = {
+                id: Date.now(),
+                name: document.getElementById('driverName').value,
+                phone: document.getElementById('driverPhone').value,
+                email: document.getElementById('driverEmail').value,
+                vehicle: {
+                    type: document.getElementById('vehicleType').value,
+                    make: document.getElementById('vehicleMake').value,
+                    model: document.getElementById('vehicleModel').value,
+                    year: document.getElementById('vehicleYear').value,
+                    plate: document.getElementById('plateNumber').value
+                },
+                licenseNumber: document.getElementById('licenseNumber').value,
+                taxiLicenseNumber: document.getElementById('taxiLicenseNumber').value,
+                type: 'driver',
+                rating: 5.0,
+                isOnline: false,
+                verified: true, // في النظام الحقيقي تكون false حتى المراجعة
+                stats: {
+                    todayRides: 0,
+                    totalRides: 0
+                }
+            };
+            
+            AppState.currentUser = driver;
+            AppState.drivers.push(driver);
+            AppState.isAuthenticated = true;
+            AppState.currentView = 'driver';
+            
+            showNotification('تم تسجيلك بنجاح! يمكنك البدء الآن 🎉', 'success');
+            render();
+            
+            setTimeout(() => {
+                initDriverMap();
+            }, 100);
+        }
+        
+        function logout() {
+            if (AppState.isOnline) {
+                showNotification('الرجاء إيقاف الاتصال أولاً', 'warning');
+                return;
+            }
+            
+            stopGPSTracking();
+            AppState.isAuthenticated = false;
+            AppState.currentUser = null;
+            AppState.currentView = 'welcome';
+            render();
+        }
+        
+        function initPassengerMap() {
+            const { lat, lng } = AppState.currentPosition;
+            AppState.map = initMap('passengerMap', lat, lng);
+            
+            AppState.passengerMarker = addCustomMarker(AppState.map, lat, lng, '👤', '#10b981');
+            
+            AppState.map.on('click', function(e) {
+                if (AppState.mapMode === 'pickup') {
+                    if (AppState.pickupMarker) AppState.map.removeLayer(AppState.pickupMarker);
+                    AppState.pickupMarker = addCustomMarker(AppState.map, e.latlng.lat, e.latlng.lng, '🟢', '#10b981');
+                    AppState.pickup = { lat: e.latlng.lat, lng: e.latlng.lng };
+                    showNotification('تم تحديد نقطة الانطلاق ✅', 'success');
+                } else if (AppState.mapMode === 'dropoff') {
+                    if (AppState.dropoffMarker) AppState.map.removeLayer(AppState.dropoffMarker);
+                    AppState.dropoffMarker = addCustomMarker(AppState.map, e.latlng.lat, e.latlng.lng, '🔴', '#ef4444');
+                    AppState.dropoff = { lat: e.latlng.lat, lng: e.latlng.lng };
+                    
+                    if (AppState.pickup) {
+                        drawRoute(AppState.map, [
+                            [AppState.pickup.lat, AppState.pickup.lng],
+                            [AppState.dropoff.lat, AppState.dropoff.lng]
+                        ]);
+                    }
+                    
+                    showNotification('تم تحديد الوجهة ✅', 'success');
+                }
+            });
+            
+            // Show nearby drivers
+            updateNearbyDrivers();
+        }
+        
+        function initDriverMap() {
+            const { lat, lng } = AppState.currentPosition;
+            AppState.map = initMap('driverMap', lat, lng);
+            
+            AppState.driverMarker = addCustomMarker(AppState.map, lat, lng, '🚕', '#10b981');
+            
+            startGPSTracking();
+        }
+        
+        function getCurrentLocation() {
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(
+                    (position) => {
+                        AppState.currentPosition = {
+                            lat: position.coords.latitude,
+                            lng: position.coords.longitude
+                        };
+                        
+                        AppState.pickup = { ...AppState.currentPosition };
+                        
+                        if (AppState.map) {
+                            AppState.map.setView([AppState.currentPosition.lat, AppState.currentPosition.lng], 15);
+                            
+                            if (AppState.passengerMarker) {
+                                AppState.passengerMarker.setLatLng([AppState.currentPosition.lat, AppState.currentPosition.lng]);
+                            } else {
+                                AppState.passengerMarker = addCustomMarker(
+                                    AppState.map, 
+                                    AppState.currentPosition.lat, 
+                                    AppState.currentPosition.lng, 
+                                    '👤', 
+                                    '#10b981'
+                                );
+                            }
+                        } else {
+                            initPassengerMap();
+                        }
+                        
+                        showNotification('تم تحديد موقعك الحالي ✅', 'success');
+                        render();
+                    },
+                    (error) => {
+                        showNotification('تعذر تحديد موقعك. تحقق من الأذونات.', 'error');
+                    }
+                );
+            }
+        }
+        
+        function setPickupMode() {
+            AppState.mapMode = 'pickup';
+            showNotification('اضغط على الخريطة لتحديد نقطة الانطلاق 🟢', 'info');
+        }
+        
+        function setDropoffMode() {
+            AppState.mapMode = 'dropoff';
+            showNotification('اضغط على الخريطة لتحديد الوجهة 🔴', 'info');
+        }
+        
+        function calculateFareEstimate() {
+            if (!AppState.pickup || !AppState.dropoff) {
+                showNotification('الرجاء تحديد نقطة الانطلاق والوجهة', 'warning');
+                return;
+            }
+            
+            const distance = calculateDistance(
+                AppState.pickup.lat, AppState.pickup.lng,
+                AppState.dropoff.lat, AppState.dropoff.lng
+            );
+            
+            const estimatedTime = Math.ceil(distance / 0.5); // 30 km/h average
+            
+            const fareDetails = calculateFare(distance, estimatedTime, AppState.rideType, AppState.isShared);
+            
+            AppState.fareEstimate = {
+                ...fareDetails,
+                distance: distance.toFixed(2),
+                estimatedTime
+            };
+            
+            showNotification('تم حساب التكلفة ✅', 'success');
+            render();
+        }
+        
+        function requestRide() {
+            if (!AppState.pickup || !AppState.dropoff) {
+                showNotification('الرجاء تحديد نقطة الانطلاق والوجهة', 'warning');
+                return;
+            }
+            
+            if (!AppState.fareEstimate) {
+                calculateFareEstimate();
+                return;
+            }
+            
+            AppState.rideStatus = 'searching';
+            showNotification('جاري البحث عن سائق... 🔍', 'info');
+            render();
+            
+            // Simulate finding driver
+            setTimeout(() => {
+                const nearbyDrivers = findNearbyDrivers(AppState.pickup.lat, AppState.pickup.lng);
+                
+                if (nearbyDrivers.length > 0) {
+                    const driver = nearbyDrivers[0];
+                    AppState.activeRide = {
+                        id: Date.now(),
+                        driver: {
+                            name: driver.name || 'السائق',
+                            phone: driver.phone || '21612345678',
+                            rating: driver.rating || 5.0,
+                            vehicle: `${driver.vehicle?.make || 'بيجو'} ${driver.vehicle?.model || '301'}`,
+                            plate: driver.vehicle?.plate || '123 تونس 4567'
+                        },
+                        fare: AppState.fareEstimate.total
+                    };
+                    
+                    AppState.rideStatus = 'accepted';
+                    showNotification('تم العثور على سائق! 🎉', 'success');
+                } else {
+                    showNotification('لا يوجد سائقون متاحون الآن', 'error');
+                    AppState.rideStatus = 'idle';
+                }
+                
+                render();
+            }, 3000);
+        }
+        
+        function cancelRide() {
+            if (!confirm('هل تريد إلغاء الرحلة؟')) return;
+            
+            AppState.activeRide = null;
+            AppState.rideStatus = 'idle';
+            showNotification('تم إلغاء الرحلة', 'info');
+            render();
+        }
+        
+        function toggleDriverOnline() {
+            AppState.isOnline = !AppState.isOnline;
+            
+            if (AppState.isOnline) {
+                AppState.currentUser.isOnline = true;
+                AppState.currentUser.location = AppState.currentPosition;
+                
+                if (!AppState.drivers.find(d => d.id === AppState.currentUser.id)) {
+                    AppState.drivers.push(AppState.currentUser);
+                }
+                
+                startGPSTracking();
+                showNotification('أنت الآن متصل! ستبدأ باستقبال الطلبات 🚗', 'success');
+                
+                // Simulate incoming request
+                setTimeout(() => {
+                    simulateIncomingRequest();
+                }, 5000);
+            } else {
+                AppState.currentUser.isOnline = false;
+                AppState.nearbyRequests = [];
+                stopGPSTracking();
+                showNotification('تم إيقاف الاتصال', 'info');
+            }
+            
+            render();
+        }
+        
+        function simulateIncomingRequest() {
+            if (!AppState.isOnline) return;
+            
+            const request = {
+                id: Date.now(),
+                pickup: 'شارع الحبيب بورقيبة، تونس',
+                dropoff: 'المرسى، تونس',
+                distance: 5.2,
+                fare: 12.5,
+                distanceToDriver: 2.3,
+                passenger: {
+                    name: 'أحمد',
+                    rating: 4.8
+                }
+            };
+            
+            AppState.nearbyRequests.push(request);
+            showNotification('طلب جديد قريب منك! 🔔', 'info');
+            render();
+        }
+        
+        function acceptRide(requestId) {
+            AppState.nearbyRequests = AppState.nearbyRequests.filter(r => r.id !== requestId);
+            
+            const rideEarning = 12.5 * 0.8; // 80% للسائق
+            AppState.earnings.today += rideEarning;
+            AppState.earnings.week += rideEarning;
+            AppState.earnings.month += rideEarning;
+            
+            if (AppState.currentUser.stats) {
+                AppState.currentUser.stats.todayRides++;
+                AppState.currentUser.stats.totalRides++;
+            }
+            
+            showNotification('تم قبول الطلب! 🎉', 'success');
+            render();
+        }
+        
+        function rejectRide(requestId) {
+            AppState.nearbyRequests = AppState.nearbyRequests.filter(r => r.id !== requestId);
+            render();
+        }
+        
+        function updateNearbyDrivers() {
+            if (!AppState.pickup) return;
+            
+            const nearby = findNearbyDrivers(AppState.pickup.lat, AppState.pickup.lng);
+            
+            const listEl = document.getElementById('nearbyDriversList');
+            if (!listEl) return;
+            
+            if (nearby.length === 0) {
+                listEl.innerHTML = '<p class="text-center text-gray-500 text-sm">لا يوجد سائقون قريبون حالياً</p>';
+            } else {
+                listEl.innerHTML = nearby.slice(0, 3).map(driver => `
+                    <div class="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
+                        <div class="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-500 rounded-full flex items-center justify-center text-white font-bold">
+                            ${driver.name?.charAt(0) || 'س'}
+                        </div>
+                        <div class="flex-1">
+                            <div class="font-semibold">${driver.name || 'سائق'}</div>
+                            <div class="text-xs text-gray-600">⭐ ${driver.rating || 5.0} • ${driver.distanceToPassenger.toFixed(1)} كم</div>
+                        </div>
+                    </div>
+                `).join('');
+            }
+        }
+
+        // ===================================
+        // RENDER - العرض
+        // ===================================
+        
+        function render() {
+            const app = document.getElementById('app');
+            
+            let html = '';
+            
+            if (!AppState.isAuthenticated) {
+                switch(AppState.currentView) {
+                    case 'welcome':
+                        html = WelcomeView();
+                        break;
+                    case 'login-passenger':
+                        html = LoginPassengerView();
+                        break;
+                    case 'login-driver':
+                        html = LoginDriverView();
+                        break;
+                    default:
+                        html = WelcomeView();
+                }
+            } else {
+                switch(AppState.currentUser?.type) {
+                    case 'passenger':
+                        html = PassengerView();
+                        break;
+                    case 'driver':
+                        html = DriverView();
+                        break;
+                    default:
+                        html = WelcomeView();
+                }
+            }
+            
+            app.innerHTML = html;
+            
+            // Re-initialize maps if needed
+            if (AppState.isAuthenticated && AppState.map) {
+                setTimeout(() => {
+                    if (AppState.currentUser?.type === 'driver' && document.getElementById('driverMap')) {
+                        if (!AppState.map._container) {
+                            initDriverMap();
+                        }
+                    } else if (AppState.currentUser?.type === 'passenger' && document.getElementById('passengerMap')) {
+                        if (!AppState.map._container) {
+                            initPassengerMap();
+                        }
+                    }
+                }, 100);
+            }
+        }
+
+        // ===================================
+        // INIT - البداية
+        // ===================================
+        
+        // Add some demo drivers
+        for (let i = 0; i < 5; i++) {
+            const lat = 36.8065 + (Math.random() - 0.5) * 0.05;
+            const lng = 10.1815 + (Math.random() - 0.5) * 0.05;
+            
+            AppState.drivers.push({
+                id: 1000 + i,
+                name: ['محمد', 'أحمد', 'علي', 'سامي', 'كريم'][i],
+                rating: 4.5 + Math.random() * 0.5,
+                isOnline: Math.random() > 0.5,
+                location: { lat, lng },
+                vehicle: {
+                    make: 'بيجو',
+                    model: '301',
+                    type: 'economy'
+                }
+            });
+        }
+        
+        render();
+    </script>
+</body>
+</html>
