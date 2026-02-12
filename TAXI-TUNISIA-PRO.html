@@ -1179,21 +1179,25 @@
         }
         
 function initPassengerMap() {
-    // 1. أهم تعديل: حذف الخريطة القديمة إذا كانت موجودة لمنع الشاشة البيضاء
+    // 1. حذف الخريطة القديمة لمنع التداخل
     if (AppState.map) {
-        AppState.map.remove();
+        try {
+            AppState.map.remove();
+        } catch (e) {
+            console.error("خطأ في حذف الخريطة:", e);
+        }
         AppState.map = null;
     }
 
     const { lat, lng } = AppState.currentPosition;
     
-    // 2. استخدام الدالة المساعدة لإنشاء الخريطة الجديدة
+    // 2. إنشاء الخريطة الجديدة
     AppState.map = initMap('passengerMap', lat, lng);
     
     // 3. إضافة أيقونة الراكب
     AppState.passengerMarker = addCustomMarker(AppState.map, lat, lng, '👤', '#10b981');
     
-    // 4. منطق النقر على الخريطة لتحديد الموقع
+    // 4. منطق النقر على الخريطة
     AppState.map.on('click', function(e) {
         if (AppState.mapMode === 'pickup') {
             if (AppState.pickupMarker) AppState.map.removeLayer(AppState.pickupMarker);
@@ -1211,6 +1215,13 @@ function initPassengerMap() {
                     [AppState.dropoff.lat, AppState.dropoff.lng]
                 ]);
             }
+            showNotification('تم تحديد الوجهة ✅', 'success');
+        }
+    }); // إغلاق حدث النقر
+
+    // تحديث السائقين القريبين
+    updateNearbyDrivers();
+} // إغلاق الدالة بالكامل (هذا هو القوس الذي كان ينقصك!)
             showNotification('تم تحديد الوجهة ✅', 'success');
         }
     });
